@@ -1,4 +1,5 @@
 #include <stdio.h>
+#include <iostream>
 #include <string.h>
 #include <assert.h> 
 #include <math.h>
@@ -8,7 +9,8 @@
 
 GLuint VBO;
 GLuint gwl;
-
+#define WINDOW_WIDTH 1000
+#define WINDOW_HEIGHT 800
 
 static const char* matrix_prog = "                                                          \n\
 #version 330                                                                        \n\
@@ -32,15 +34,35 @@ void main(){                                                                    
 
 class BuilderTransformator {
 private:
-    glm::mat4x4 matrix, moving, resize, rotate;
+    glm::mat4x4 matrix, moving, resize, rotate, perspective;
+    glm::mat4x4 camera_move, camera_rotate, camera_perspective;
+
+    glm::vec3 norm(float x, float y, float z) {
+        float len = sqrtf(x * x + y * y + z * z);
+
+        x /= len;
+        y /= len;
+        z /= len;
+
+        return { x, y, z };
+    }
+    glm::vec3 cross(glm::vec3 v, glm::vec3 u) {
+        
+        float x = v[1] * u[2] - v[2] * u[1];//y1*z2 - z1*y2;
+        float y = v[2] * u[0] - v[0] * u[2];//z1*x2 - x1*z2;
+        float z = v[0] * u[1] - v[1] * u[0];// x1* y2 - y1 * x2;
+
+        return {x, y, z};
+    }
+
 public:
     BuilderTransformator() {
         moving = {
             {1.0f, 0.0f, 0.0f, 0.0f},
-            {0.0f, 1.0f, 0.0f, 0.0f},
-            {0.0f, 0.0f, 1.0f, 0.0f},
-            {0.0f, 0.0f, 0.0f, 1.0f}
-        };
+        {0.0f, 1.0f, 0.0f, 0.0f},
+        {0.0f, 0.0f, 1.0f, 0.0f},
+        {0.0f, 0.0f, 0.0f, 1.0f}
+    };
         resize = {
             {1.0f, 0.0f, 0.0f, 0.0f},
             {0.0f, 1.0f, 0.0f, 0.0f},
@@ -48,6 +70,31 @@ public:
             {0.0f, 0.0f, 0.0f, 1.0f}
         };
         rotate = {
+            {1.0f, 0.0f, 0.0f, 0.0f},
+            {0.0f, 1.0f, 0.0f, 0.0f},
+            {0.0f, 0.0f, 1.0f, 0.0f},
+            {0.0f, 0.0f, 0.0f, 1.0f}
+        };
+        perspective = {
+            {1.0f, 0.0f, 0.0f, 0.0f},
+            {0.0f, 1.0f, 0.0f, 0.0f},
+            {0.0f, 0.0f, 1.0f, 0.0f},
+            {0.0f, 0.0f, 0.0f, 1.0f}
+        };
+        
+        camera_move = {
+            {1.0f, 0.0f, 0.0f, 0.0f},
+            {0.0f, 1.0f, 0.0f, 0.0f},
+            {0.0f, 0.0f, 1.0f, 0.0f},
+            {0.0f, 0.0f, 0.0f, 1.0f}
+        };
+        camera_rotate = {
+            {1.0f, 0.0f, 0.0f, 0.0f},
+            {0.0f, 1.0f, 0.0f, 0.0f},
+            {0.0f, 0.0f, 1.0f, 0.0f},
+            {0.0f, 0.0f, 0.0f, 1.0f}
+        };
+        camera_perspective = {
             {1.0f, 0.0f, 0.0f, 0.0f},
             {0.0f, 1.0f, 0.0f, 0.0f},
             {0.0f, 0.0f, 1.0f, 0.0f},
@@ -94,13 +141,49 @@ public:
              {glm::cos(angleX), glm::sin(0.0) * (-1), 0.0f, 0.0f},
             {glm::sin(angleY), glm::cos(angleY), 0.0f, 0.0f},
             {0.0f, 0.0f, 1.0f, 0.0f},
-            {0.0f, 0.0f, 0.0f, 1.0f}
-        };
+        {0.0f, 0.0f, 0.0f, 1.0f}
+    };
         rotate = rotate_Z * rotate_Y * rotate_X;
     }
 
+    void perspectiveObj(float closeness, float range, float width, float height, float fov) {
+        float ar = width / height;
+        float zrange = closeness - range;
+        float tanhal = glm::tan(glm::radians(fov / 2.0f));
+
+        perspective = {
+            {1.0f / (ar * tanhal), 0.0f, 0.0f, 0.0f},
+            {0.0f, 1.0 / tanhal, 0.0f, 0.0f},
+            {0.0f, 0.0f, (-closeness - range) / zrange, 2.0f * range * closeness / zrange},
+            {0.0f, 0.0f, 1.0f, 0.0f}
+        };
+    }
+
+    void cameraMove(float x, float y, float z) {
+        camera_move = {
+            {1.0f, 0.0f, 0.0f, -x},
+            {0.0f, 1.0f, 0.0f, -y},
+            {0.0f, 0.0f, 1.0f, -z},
+            {0.0f, 0.0f, 0.0f, 1.0f}
+        };
+    }
+
+    void cameraRotate(float target_x, float target_y, float target_z,
+                        float up_x, float up_y, float up_z) {
+        glm::vec3 n = norm(target_x, target_y, target_z);
+        glm::vec3 u = norm(up_x, up_y, up_z);
+        glm::vec3 v = cross(n, u);
+        camera_rotate = {
+            {u[0], u[1], u[2], 0.0f},
+            {v[0], v[1], v[2], 0.0f},
+            {n[0], n[1], n[2], 0.0f},
+            {0.0f, 0.0f, 0.0f, 1.0f}
+        };
+    }
+
+
     glm::mat4x4* getMatrix() {
-        matrix = moving * rotate * resize;
+        matrix = perspective * moving * rotate * resize;
         return &matrix;
     }
 };
@@ -113,9 +196,12 @@ static void render_scene() {
 
     BuilderTransformator move;
    
-    move.resizeObj(glm::sin(v * 0.1f), glm::sin(v * 0.1f), glm::sin(v * 0.1f));
-    move.moveObj(glm::sin(v), 0.0f, 0.0f);
-    move.rotateObj(glm::sin(v) * 9.0f, glm::sin(v) * 9.0f, glm::sin(v) * 9.0f);
+    //move.resizeObj(glm::sin(v * 0.1f), glm::sin(v * 0.1f), glm::sin(v * 0.1f));
+    move.moveObj(0.0f, 0.0f, 5.0f);
+    move.rotateObj(0.0f, v, 0.0f);
+    move.perspectiveObj(1.0f, 100.0f, WINDOW_WIDTH, WINDOW_HEIGHT, 30.0f);
+    move.cameraMove(0.0f, 0.0f, -2.0f);
+    move.cameraRotate(0.0f, 0.0f, 2.0f, 0.0f, 1.0f, 0.0);
 
     glUniformMatrix4fv(gwl, 1, GL_TRUE, (const GLfloat*)move.getMatrix());
 
@@ -163,7 +249,7 @@ int main(int argc, char** argv)
     glutInit(&argc, argv);
     glutInitDisplayMode(GLUT_DOUBLE | GLUT_RGBA);
     
-    glutInitWindowSize(1000, 800);
+    glutInitWindowSize(WINDOW_WIDTH, WINDOW_HEIGHT);
     glutInitWindowPosition(100, 100);
     
     glutCreateWindow("Lab Dmitry");
